@@ -74,15 +74,14 @@ test('global Shadow DOM scanning and paid-page bypass stay removed', () => {
     assert.doesNotMatch(source, /not-charge-high-level-cover/);
 });
 
-test('overlays hide when their native anchors are covered', () => {
+test('profile overlays hide when their anchor is covered', () => {
     const positioning = section('function isAnchorOccluded(', 'function mountVideoProfileOverlay(');
     assert.match(positioning, /document\.elementsFromPoint/);
     assert.match(positioning, /element !== overlayHost/);
     assert.match(positioning, /isAnchorOccluded\(rect, videoProfileTarget\)/);
-    assert.match(positioning, /isAnchorOccluded\(rect, card\)/);
 });
 
-test('real buttons are never inserted into Bilibili component DOM', () => {
+test('author-row inline mounts stay forbidden', () => {
     assert.doesNotMatch(source, /bili-blacklist-inline|insertAdjacentElement/);
 });
 

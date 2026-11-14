@@ -2,7 +2,7 @@
   "name": "bilibili-1-click-blocker",
   "private": true,
   "scripts": {
-    "test": "node --test"
+    "test": "node --test --test-force-exit test/architecture.test.js && node test/card-button.js"
   },
   "devDependencies": {
     "jsdom": "^25.0.1"
