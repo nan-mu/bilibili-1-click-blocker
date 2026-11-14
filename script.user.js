@@ -5,7 +5,7 @@
 // @match        https://www.bilibili.com/*
 // @match        https://search.bilibili.com/*
 // @icon         https://www.bilibili.com/favicon.ico
-// @version      1.6.4
+// @version      1.6.5
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_getValue
@@ -24,7 +24,7 @@
     'use strict';
 
     // ==================== 常量 ====================
-    const VERSION = '1.6.4';
+    const VERSION = '1.6.5';
 
     const API = {
         MODIFY: 'https://api.bilibili.com/x/relation/modify',
@@ -187,6 +187,16 @@
           font-size: 11px !important;
           padding: 1px 5px !important;
           line-height: normal !important;
+        }
+        [data-bili-blacklist-card-host] {
+          position: absolute !important;
+          z-index: 2 !important;
+          pointer-events: none !important;
+          margin: 0 !important;
+        }
+        [data-bili-blacklist-card-host] > .bilibili-blacklist-btn {
+          pointer-events: auto !important;
+          margin: 0 !important;
         }
 
         /* Toast */
@@ -359,7 +369,7 @@
     }
 
     // ==================== 拉黑按钮 ====================
-    function createBlacklistButton(uid, upName) {
+    function createBlacklistButton(uid, upName, resolveTarget) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'bilibili-blacklist-btn';
@@ -369,7 +379,16 @@
             e.preventDefault();
             e.stopPropagation();
             if (btn.disabled) return;
-            blockUser(uid, upName, btn);
+            let targetUid = uid;
+            let targetName = upName;
+            if (resolveTarget) {
+                const target = resolveTarget();
+                if (!target || !target.uid) return;
+                targetUid = target.uid;
+                targetName = target.upName || targetName;
+                btn.dataset.uid = targetUid;
+            }
+            blockUser(targetUid, targetName, btn);
         });
         return btn;
     }
@@ -454,11 +473,13 @@
     }
 
     function removeCardsByUid(uid) {
-        for (const [card, info] of homeCardRegistry) {
-            if (info.uid === uid && card.isConnected) {
-                fadeOutAndRemove(card);
-            }
-        }
+        const wanted = String(uid);
+        document.querySelectorAll('[data-bili-blacklist-card-host]').forEach(host => {
+            const btn = host.querySelector('.bilibili-blacklist-btn');
+            const card = host.parentElement;
+            if (!btn || btn.dataset.uid !== wanted || !card || !card.isConnected) return;
+            fadeOutAndRemove(card);
+        });
         const cardSel = [
             `.bili-video-card[data-up-id="${uid}"]`,
             `.feed-card[data-up-id="${uid}"]`,
@@ -589,59 +610,64 @@
     }
 
     // ==================== 页面处理：首页 / 搜索页 ====================
-    const homeCardOverlays = new Map();
-    const homeCardRegistry = new Map();
+    const CARD_OWNER_SELECTOR = [
+        '.bili-video-card',
+        '.bili-video-card__wrap',
+        '.video-card',
+        '.feed-card',
+        '.video-page-card-small',
+        '.video-page-special-card-small',
+    ].join(',');
 
-    function removeHomeCardOverlays() {
-        for (const { overlay } of homeCardOverlays.values()) {
-            overlay.remove();
-        }
-        homeCardOverlays.clear();
-        homeCardRegistry.clear();
+    function removeCardButtonHosts() {
+        document.querySelectorAll('[data-bili-blacklist-card-host]').forEach(host => host.remove());
     }
 
-    function positionHomeCardOverlays() {
-        for (const [anchor, entry] of homeCardOverlays) {
-            const { overlay, card } = entry;
-            if (!anchor.isConnected || !card.isConnected) {
-                overlay.remove();
-                homeCardOverlays.delete(anchor);
-                homeCardRegistry.delete(card);
-                continue;
-            }
-
-            const rect = getTextRect(anchor);
-            if (!rect) continue;
-            const outsideViewport = rect.bottom <= 0
-                || rect.top >= window.innerHeight
-                || rect.right <= 0
-                || rect.left >= window.innerWidth;
-            if (rect.width === 0 || rect.height === 0 || outsideViewport || isAnchorOccluded(rect, card)) {
-                overlay.style.display = 'none';
-                continue;
-            }
-
-            overlay.style.display = 'block';
-            const overlayWidth = overlay.offsetWidth;
-            const overlayHeight = overlay.offsetHeight;
-            const cardRect = card.getBoundingClientRect();
-            const preferredLeft = rect.right + 6;
-            const maxLeft = Math.min(cardRect.right - overlayWidth, window.innerWidth - overlayWidth);
-            overlay.style.left = `${Math.max(cardRect.left, Math.min(preferredLeft, maxLeft))}px`;
-            overlay.style.top = `${Math.max(0, rect.top + (rect.height - overlayHeight) / 2)}px`;
-        }
+    function cardOwnsAnchor(card, anchor) {
+        const owner = anchor.closest(CARD_OWNER_SELECTOR);
+        return !owner || owner === card;
     }
 
-    function mountHomeCardOverlay(card, anchor, uid, upName) {
-        if (homeCardOverlays.has(anchor)) return false;
+    function syncCardButton(btn, uid) {
+        if (!btn || btn.dataset.originalText) return;
+        const blocked = relationStateCache.get(uid) === true;
+        const label = blocked ? '已拉黑' : '拉黑';
+        if (btn.dataset.uid === uid && btn.disabled === blocked && btn.textContent === label) return;
+        btn.dataset.uid = uid;
+        btn.disabled = blocked;
+        btn.textContent = label;
+    }
 
-        const overlay = document.createElement('div');
-        overlay.className = 'home-card-blacklist-overlay';
-        overlay.appendChild(createBlacklistButton(uid, upName));
-        homeCardOverlays.set(anchor, { overlay, card });
-        homeCardRegistry.set(card, { uid });
-        getOverlayRoot().appendChild(overlay);
-        positionHomeCardOverlays();
+    function positionCardHost(card, anchor, host) {
+        if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+        const rect = getTextRect(anchor);
+        if (!rect || rect.width === 0 || rect.height === 0) return;
+        const cardRect = card.getBoundingClientRect();
+        const top = rect.top - cardRect.top + (rect.height - host.offsetHeight) / 2;
+        const left = rect.right - cardRect.left + 6;
+        host.style.top = `${Math.max(0, top)}px`;
+        host.style.left = `${Math.max(0, left)}px`;
+    }
+
+    function readCardTarget(card) {
+        if (card.matches('.video-page-card-small, .video-page-special-card-small')) {
+            return extractVideoRecommendationOwnerInfo(card);
+        }
+        return extractHomeOwnerInfo(card);
+    }
+
+    function mountCardButton(card, anchor, uid, upName) {
+        if (!card || !anchor || !cardOwnsAnchor(card, anchor)) return false;
+
+        let host = card.querySelector(':scope > [data-bili-blacklist-card-host]');
+        if (!host) {
+            host = document.createElement('div');
+            host.dataset.biliBlacklistCardHost = 'true';
+            host.appendChild(createBlacklistButton(uid, upName, () => readCardTarget(card)));
+            card.appendChild(host);
+        }
+        syncCardButton(host.querySelector('.bilibili-blacklist-btn'), uid);
+        positionCardHost(card, anchor, host);
         return true;
     }
 
@@ -657,7 +683,7 @@
             if (!info) return;
             const { uid, upName, anchor } = info;
             if (!anchor) return;
-            mountHomeCardOverlay(card, anchor, uid, upName);
+            mountCardButton(card, anchor, uid, upName);
         });
     }
 
@@ -700,7 +726,6 @@
     let overlayRoot = null;
     let videoProfileOverlay = null;
     let videoProfileTarget = null;
-    const videoCardOverlays = new Map();
     const relationStateCache = new Map();
     const relationRequestCache = new Map();
 
@@ -766,21 +791,8 @@
         videoProfileTarget = null;
     }
 
-    function removeVideoCardOverlays() {
-        for (const { overlay } of videoCardOverlays.values()) {
-            overlay.remove();
-        }
-        videoCardOverlays.clear();
-    }
-
     function isVideoPlayerExpanded() {
         return Boolean(document.fullscreenElement || document.querySelector(VIDEO_PLAYER_EXPANDED_SELECTOR));
-    }
-
-    function hideVideoCardOverlays() {
-        for (const { overlay } of videoCardOverlays.values()) {
-            overlay.style.display = 'none';
-        }
     }
 
     function getTextRect(element) {
@@ -838,42 +850,6 @@
         videoProfileOverlay.style.top = `${Math.max(0, rect.top + (rect.height - overlayHeight) / 2)}px`;
     }
 
-    function positionVideoCardOverlays() {
-        if (isVideoPlayerExpanded()) {
-            hideVideoCardOverlays();
-            return;
-        }
-
-        for (const [target, entry] of videoCardOverlays) {
-            const { overlay, card } = entry;
-            if (!target.isConnected || !card.isConnected) {
-                overlay.remove();
-                videoCardOverlays.delete(target);
-                continue;
-            }
-
-            const rect = getTextRect(target);
-            if (!rect) continue;
-            const outsideViewport = rect.bottom <= 0
-                || rect.top >= window.innerHeight
-                || rect.right <= 0
-                || rect.left >= window.innerWidth;
-            if (rect.width === 0 || rect.height === 0 || outsideViewport || isAnchorOccluded(rect, card)) {
-                overlay.style.display = 'none';
-                continue;
-            }
-
-            overlay.style.display = 'block';
-            const overlayWidth = overlay.offsetWidth;
-            const overlayHeight = overlay.offsetHeight;
-            const cardRect = card.getBoundingClientRect();
-            const preferredLeft = rect.right + 5;
-            const maxLeft = Math.min(cardRect.right - overlayWidth, window.innerWidth - overlayWidth);
-            overlay.style.left = `${Math.max(cardRect.left, Math.min(preferredLeft, maxLeft))}px`;
-            overlay.style.top = `${Math.max(0, rect.top + (rect.height - overlayHeight) / 2)}px`;
-        }
-    }
-
     function mountVideoProfileOverlay(target, uid, upName, isBlocked) {
         const existingButton = videoProfileOverlay && videoProfileOverlay.querySelector('.bilibili-blacklist-btn');
         if (videoProfileTarget === target && existingButton && existingButton.dataset.uid === uid) {
@@ -911,19 +887,6 @@
                 log('视频页右侧 UP 信息浮层按钮已添加:', upName, uid, isBlocked === true ? '已拉黑' : '未拉黑');
             }
         });
-    }
-
-    function mountVideoCardOverlay(nameEl, card, uid, upName) {
-        const existing = videoCardOverlays.get(nameEl);
-        if (existing) return false;
-
-        const overlay = document.createElement('div');
-        overlay.className = 'video-card-blacklist-overlay';
-        overlay.appendChild(createBlacklistButton(uid, upName));
-        videoCardOverlays.set(nameEl, { overlay, card });
-        getOverlayRoot().appendChild(overlay);
-        positionVideoCardOverlays();
-        return true;
     }
 
     function processVideoProfileContainer(container) {
@@ -973,8 +936,8 @@
         if (!info) return false;
         const { uid, upName, anchor } = info;
 
-        if (!mountVideoCardOverlay(anchor, card, uid, upName)) return false;
-        log('视频推荐列表浮层按钮已添加:', upName, uid);
+        if (!mountCardButton(card, anchor, uid, upName)) return false;
+        log('视频推荐列表按钮已添加:', upName, uid);
         return true;
     }
 
@@ -1036,12 +999,10 @@
         if (!root || isInsideVideoPlayer(root)) return;
         try {
             if (getPageKind() === 'video') {
-                removeHomeCardOverlays();
                 processVideoPage(root, allowRetry);
             } else {
                 detachVideoPlayerStateObserver();
                 removeVideoProfileOverlay();
-                removeVideoCardOverlays();
                 processHomePage(root);
             }
         } catch (err) {
@@ -1065,7 +1026,6 @@
 
     function updateVideoOverlayVisibility() {
         positionVideoProfileOverlay();
-        positionVideoCardOverlays();
     }
 
     function scheduleOverlayPosition() {
@@ -1074,8 +1034,6 @@
         requestAnimationFrame(() => {
             positionTick = false;
             positionVideoProfileOverlay();
-            positionVideoCardOverlays();
-            positionHomeCardOverlays();
         });
     }
 
@@ -1142,7 +1100,7 @@
             for (const node of mutation.addedNodes) {
                 const root = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
                 if (!root || isInsideVideoPlayer(root)) continue;
-                if (root.closest('[data-bilibili-blacklist-overlay-host]')) continue;
+                if (root.closest('[data-bilibili-blacklist-overlay-host], [data-bili-blacklist-card-host]')) continue;
                 roots.add(root);
             }
         }
@@ -1161,8 +1119,7 @@
         }
         detachVideoPlayerStateObserver();
         removeVideoProfileOverlay();
-        removeVideoCardOverlays();
-        removeHomeCardOverlays();
+        removeCardButtonHosts();
     }
 
     function handleRouteChange() {
