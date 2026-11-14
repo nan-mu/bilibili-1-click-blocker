@@ -1,0 +1,10 @@
+{
+  "name": "bilibili-1-click-blocker",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  }
+}
